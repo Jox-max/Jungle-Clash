@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0a2f17">
+<title>Jungle Clash Web</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lilita+One&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;background:#06200f;overflow:hidden;touch-action:none;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(ellipse at center,#0d3a1c 0%,#041509 100%)}
+  canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c"></canvas></div>
+<script>
+(() => {
+'use strict';
+/* =========================================================================
+   JUNGLE CLASH WEB — juego completo en un solo archivo (Canvas + Web Audio)
+   Arena 18x32 · Búnkeres 1500 HP · Barra de petróleo 10 seg · 8 cartas · IA
+   ========================================================================= */
+
+// ---------- Constantes de diseño (paleta medida del video) ----------
+const W = 450, H = 960;                 // resolución lógica (vertical)
+const T = 22, COLS = 18, ROWS = 32;     // casillas de 22 px → arena 396 x 704
+const AX = 27, AY = 46;                 // esquina superior izquierda de la arena
+const AW = COLS * T, AH = ROWS * T;
+const RY = 16;                          // centro del río (en casillas)
+const HUDY = AY + AH + 4;               // inicio del HUD inferior
+const BR = [3.5, 14.5];                 // carriles / puentes
+const FONT = '"Lilita One","Arial Black",Arial,sans-serif';
+let FW = 'bold ';
+const OUT = 'rgba(28,20,10,0.92)';
+const SKIN = '#f2c08f', SKIN_D = '#d4955f', OLIVE = '#6b8f3a', BOOT = '#3d2e1a';
+
+const PAL = {
+  grassA: '#a5b82c', grassB: '#b1c620', path: '#e7b53c', pathEdge: '#afa12a',
+  river: '#428a7c', bank: '#6d4207', bridge: '#de8637', jungle: '#17924c', leaf: '#789e1c',
+  border: '#8f9d23', oil: '#645195', oilLight: '#9688e6', oilEmpty: '#203934', oilDrop: '#281e4c',
+  hud: '#0a2f17', star: '#ebb24c'
+};
+const TEAM = [
+  { main: '#2f7fe0', dark: '#17469a', light: '#8fe6ff', roof: '#0dc5ff', wall: '#3d6f9e', skirt: '#0a5db6',
+    bar: '#5bd12e', badge: '#1f5fd0', hq: '#18c7f5' },
+  { main: '#e0362b', dark: '#94170f', light: '#ff9d7a', roof: '#ff4b00', wall: '#6992c6', skirt: '#87180b',
+    bar: '#ef3b2d', badge: '#d6231b', hq: '#ff5a1a' }
+];
+const RAR = { common: { name: 'Común', col: '#cfd6dc', txt: '#4fb6d8' },
+              rare:   { name: 'Rara',  col: '#ff8a1c', txt: '#f07a10' },
+              epic:   { name: 'Épica', col: '#c040ff', txt: '#b030e8' } };
+
+// ---------- Cartas (8) ----------
+const CARDS = {
+  grenadier: { id:'grenadier', name:'Granadero', cost:3, kind:'troop', rarity:'common', type:'Tropa',
+    hp:150, dmg:104, splash:1.2, hit:2.0, range:5.0, speed:1.0, speedTxt:'Media', target:'ground', targetTxt:'Terrestre',
+    count:1, radius:0.42, attack:'grenade', deploy:1.0,
+    desc:'Un soldado con granadas que daña tropas terrestres y estructuras en área. Daño monstruoso para alguien de su estatura.' },
+  gunner: { id:'gunner', name:'Ametrallador', cost:3, kind:'troop', rarity:'common', type:'Tropa',
+    hp:420, dmg:24, hit:0.4, range:4.5, speed:1.0, speedTxt:'Media', target:'ground', targetTxt:'Terrestre',
+    count:1, radius:0.5, attack:'mg', deploy:1.0,
+    desc:'Ráfagas rápidas de ametralladora. Ideal para frenar a las tropas pequeñas.' },
+  colossus: { id:'colossus', name:'Coloso', cost:5, kind:'troop', rarity:'rare', type:'Tropa',
+    hp:1450, dmg:190, hit:1.6, range:0.8, speed:0.75, speedTxt:'Lenta', target:'buildings', targetTxt:'Estructuras',
+    count:1, radius:0.72, attack:'punch', deploy:1.0,
+    desc:'Una montaña de músculo que solo golpea estructuras. Aguanta todo lo que le lancen.' },
+  sniper: { id:'sniper', name:'Francotirador', cost:4, kind:'troop', rarity:'rare', type:'Tropa',
+    hp:220, dmg:240, hit:2.6, range:7.5, speed:0.85, speedTxt:'Lenta', target:'ground', targetTxt:'Terrestre',
+    count:1, radius:0.42, attack:'snipe', deploy:1.0,
+    desc:'Dispara desde muy lejos con balas de alto calibre. Frágil si lo alcanzan.' },
+  spies: { id:'spies', name:'Espías', cost:3, kind:'troop', rarity:'rare', type:'Tropa',
+    hp:110, dmg:55, hit:0.9, range:0.6, speed:1.6, speedTxt:'Rápida', target:'ground', targetTxt:'Terrestre',
+    count:3, radius:0.34, attack:'knife', deploy:1.0,
+    desc:'Tres agentes veloces armados con cuchillo. Llegan antes de que los veas.' },
+  mecha: { id:'mecha', name:'Mecha', cost:4, kind:'troop', rarity:'epic', type:'Tropa',
+    hp:640, dmg:95, hit:1.1, range:0.8, speed:1.9, speedTxt:'Muy rápida', target:'ground', targetTxt:'Terrestre',
+    count:1, radius:0.56, attack:'smash', deploy:1.0,
+    desc:'Un coloso de hierro con inteligencia rudimentaria. Golpea estructuras y tropas terrestres.' },
+  bombing: { id:'bombing', name:'Bombardeo', cost:4, kind:'air', rarity:'common', type:'Apoyo aéreo',
+    dmg:95, bombs:5, radius:2.4, towerMul:0.35, deploy:1.0,
+    desc:'Un bombardero suelta una lluvia de bombas sobre un área grande. Menos daño a torres y al Cuartel.' },
+  rockets: { id:'rockets', name:'Cohetes', cost:3, kind:'air', rarity:'epic', type:'Apoyo aéreo',
+    dmg:130, rockets:3, radius:1.7, towerMul:0.4, deploy:1.0,
+    desc:'Tres cohetes caen sobre la zona elegida. Perfectos para rematar tropas y torres.' }
+};
+const DECK = ['grenadier','gunner','colossus','sniper','spies','mecha','bombing','rockets'];
+const FIG_H = { grenadier:34, gunner:33, colossus:43, sniper:32, spies:30, mecha:37 };
+const figScale = id => (id === 'spies' ? 0.82 : 1) * 1.15;
+
+const DIFFS = {
+  easy:   { name:'Fácil',   think:1.5, oilMul:0.85, push:9.6, react:0.55, spellV:420 },
+  normal: { name:'Normal',  think:1.0, oilMul:1.0,  push:8.0, react:0.85, spellV:300 },
+  hard:   { name:'Difícil', think:0.6, oilMul:1.12, push:7.0, react:1.0,  spellV:230 }
+};
+
+// ---------- Utilidades ----------
+const rnd = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const px = x => AX + x * T, py = y => AY + y * T;
+const hyp = Math.hypot;
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.random()*(i+1)|0; [a[i],a[j]]=[a[j],a[i]]; } return a; }
+function shade(hex, amt){
+  const c = parseInt(hex.slice(1), 16); let r = c >> 16, g = c >> 8 & 255, b = c & 255;
+  if (amt < 0) { r *= 1 + amt; g *= 1 + amt; b *= 1 + amt; }
+  else { r += (255 - r) * amt; g += (255 - g) * amt; b += (255 - b) * amt; }
+  return 'rgb(' + (r|0) + ',' + (g|0) + ',' + (b|0) + ')';
+}
+function fmtTime(s){ s = Math.max(0, Math.ceil(s)); const m = Math.floor(s/60), r = s % 60; return m > 0 ? m + 'm ' + r + 's' : r + 's'; }
+const store = { get(k,d){ try{ const v = localStorage.getItem('jc_'+k); return v===null?d:JSON.parse(v);}catch(e){return d;} },
+                set(k,v){ try{ localStorage.setItem('jc_'+k, JSON.stringify(v)); }catch(e){} } };
+
+// ---------- Primitivas de dibujo ----------
+function rr(g,x,y,w,h,r){ r=Math.min(r,w/2,h/2); g.beginPath(); g.moveTo(x+r,y); g.arcTo(x+w,y,x+w,y+h,r);
+  g.arcTo(x+w,y+h,x,y+h,r); g.arcTo(x,y+h,x,y,r); g.arcTo(x,y,x+w,y,r); g.closePath(); }
+function fillRR(g,x,y,w,h,r,fill,stroke,lw){ rr(g,x,y,w,h,r); if(fill){g.fillStyle=fill; g.fill();}
+  if(stroke){ g.lineWidth=lw||1.5; g.strokeStyle=stroke; g.stroke(); } }
+function circ(g,x,y,r,fill,stroke,lw){ g.beginPath(); g.arc(x,y,Math.max(0.1,r),0,Math.PI*2);
+  if(fill){g.fillStyle=fill; g.fill();} if(stroke){ g.lineWidth=lw||1.2; g.strokeStyle=stroke; g.stroke(); } }
+function ell(g,x,y,rx,ry,fill,stroke,lw){ g.beginPath(); g.ellipse(x,y,Math.max(0.1,rx),Math.max(0.1,ry),0,0,Math.PI*2);
+  if(fill){g.fillStyle=fill; g.fill();} if(stroke){ g.lineWidth=lw||1.2; g.strokeStyle=stroke; g.stroke(); } }
+function ln(g,x1,y1,x2,y2){ g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.stroke(); }
+function limb(g,x1,y1,x2,y2,w,col){ g.lineCap='round'; g.strokeStyle=OUT; g.lineWidth=w+1.6; ln(g,x1,y1,x2,y2);
+  g.strokeStyle=col; g.lineWidth=w; ln(g,x1,y1,x2,y2); }
+function text(g,s,x,y,size,color,align,stroke,sw){
+  g.font = FW + size + 'px ' + FONT; g.textAlign = align || 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+  if (stroke !== null) { g.lineWidth = sw || Math.max(2.5, size * 0.2); g.strokeStyle = stroke || '#1b130a'; g.strokeText(s, x, y); }
+  g.fillStyle = color; g.fillText(s, x, y);
+}
+function wrapText(g,s,x,y,maxW,lh,size,color,align){
+  g.font = FW + size + 'px ' + FONT; const words = s.split(' '); let line = '', yy = y;
+  for (const w of words) { const t2 = line ? line + ' ' + w : w;
+    if (g.measureText(t2).width > maxW && line) { text(g,line,x,yy,size,color,align,null); line = w; yy += lh; } else line = t2; }
+  if (line) text(g,line,x,yy,size,color,align,null); return yy;
+}
+function starPath(g,x,y,r,ri){ g.beginPath(); for(let i=0;i<10;i++){ const a=-Math.PI/2+i*Math.PI/5, rad=i%2?ri:r;
+  g.lineTo(x+Math.cos(a)*rad, y+Math.sin(a)*rad);} g.closePath(); }
+function drawStar(g,x,y,r,fill,stroke,lw){ starPath(g,x,y,r,r*0.48); g.fillStyle=fill; g.fill(); if(stroke){g.lineWidth=lw||1.5; g.strokeStyle=stroke; g.stroke();} }
+function oct(g,cx,cy,rx,ry,c){ const c2=c*ry/rx; g.beginPath(); g.moveTo(cx-rx+c,cy-ry); g.lineTo(cx+rx-c,cy-ry);
+  g.lineTo(cx+rx,cy-ry+c2); g.lineTo(cx+rx,cy+ry-c2); g.lineTo(cx+rx-c,cy+ry); g.lineTo(cx-rx+c,cy+ry);
+  g.lineTo(cx-rx,cy+ry-c2); g.lineTo(cx-rx,cy-ry+c2); g.closePath(); }
+function dropPath(g,x,y,r){ g.beginPath(); g.moveTo(x,y-r*1.45); g.bezierCurveTo(x+r*0.5,y-r*0.7,x+r,y-r*0.2,x+r,y+r*0.25);
+  g.arc(x,y+r*0.25,r,0,Math.PI); g.bezierCurveTo(x-r,y-r*0.2,x-r*0.5,y-r*0.7,x,y-r*1.45); g.closePath(); }
+function drawDrop(g,x,y,r,gray){ dropPath(g,x,y,r);
+  const gr=g.createLinearGradient(x-r,y-r,x+r,y+r); gr.addColorStop(0,gray?'#9a9a9a':'#8e6ad8'); gr.addColorStop(1,gray?'#3a3a3a':PAL.oilDrop);
+  g.fillStyle=gr; g.fill(); g.lineWidth=1.4; g.strokeStyle='#120c22'; g.stroke();
+  ell(g,x-r*0.35,y-r*0.05,r*0.22,r*0.38,'rgba(255,255,255,0.55)'); }
+
+/* =========================================================================
+   AUDIO — todo sintetizado con Web Audio API
+   ========================================================================= */
+const SND = (() => {
+  let ac = null, master, sfx, mus, nb, muted = store.get('mute', false); const last = {};
+  function init(){
+    if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    ac = new AC();
+    const comp = ac.createDynamicsCompressor(); comp.threshold.value = -16; comp.knee.value = 10; comp.ratio.value = 5;
+    comp.attack.value = 0.003; comp.release.value = 0.2; comp.connect(ac.destination);
+    master = ac.createGain(); master.gain.value = muted ? 0 : 0.9; master.connect(comp);
+    sfx = ac.createGain(); sfx.gain.value = 0.85; sfx.connect(master);
+    mus = ac.createGain(); mus.gain.value = 0.3; mus.connect(master);
+    nb = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
+    const d = nb.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  const ready = () => ac && ac.state === 'running' && !muted;
+  function gate(k, ms){ const n = performance.now(); if (last[k] && n - last[k] < ms) return false; last[k] = n; return true; }
+  function dest(o){ if (o.dest) return o.dest;
+    if (o.pan !== undefined && ac.createStereoPanner) { const p = ac.createStereoPanner(); p.pan.value = clamp(o.pan,-1,1); p.connect(sfx); return p; }
+    return sfx; }
+  function N(o){ const t = o.at !== undefined ? o.at : ac.currentTime + (o.when || 0), d = o.dur || 0.2;
+    const s = ac.createBufferSource(); s.buffer = nb; s.loop = true;
+    const f = ac.createBiquadFilter(); f.type = o.type || 'lowpass'; f.frequency.setValueAtTime(o.f || 1000, t);
+    if (o.f2) f.frequency.exponentialRampToValueAtTime(o.f2, t + d); f.Q.value = o.q || 0.7;
+    const g = ac.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.g || 0.3, t + (o.a || 0.004));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    s.connect(f); f.connect(g); g.connect(dest(o)); s.start(t, Math.random() * 1.5); s.stop(t + d + 0.05); }
+  function O(o){ const t = o.at !== undefined ? o.at : ac.currentTime + (o.when || 0), d = o.dur || 0.2;
+    const os = ac.createOscillator(); os.type = o.type || 'sine'; os.frequency.setValueAtTime(o.f, t);
+    if (o.f2) os.frequency.exponentialRampToValueAtTime(o.f2, t + d);
+    const g = ac.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.g || 0.2, t + (o.a || 0.005));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    let n = os; if (o.lp) { const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = o.lp; os.connect(f); n = f; }
+    n.connect(g); g.connect(dest(o)); os.start(t); os.stop(t + d + 0.05); }
+  const P = x => x === undefined ? undefined : (x - 9) / 9 * 0.7;
+
+  const api = {
+    init,
+    get muted(){ return muted; },
+    get state(){ return ac ? ac.state : 'none'; },
+    toggle(){ muted = !muted; store.set('mute', muted); if (master) master.gain.setTargetAtTime(muted ? 0 : 0.9, ac.currentTime, 0.02); return muted; },
+    click(){ if(!ready())return; O({f:900,f2:1350,dur:.08,type:'triangle',g:.16}); },
+    select(){ if(!ready())return; O({f:620,f2:930,dur:.07,type:'triangle',g:.14}); O({f:1240,dur:.06,type:'sine',g:.05,when:.04}); },
+    error(){ if(!ready()||!gate('err',150))return; O({f:180,dur:.1,type:'square',g:.07,lp:900}); O({f:135,dur:.16,type:'square',g:.07,lp:900,when:.11}); },
+    deploy(x){ if(!ready())return; N({type:'lowpass',f:600,f2:120,dur:.2,g:.32,pan:P(x)}); O({f:300,f2:640,dur:.14,type:'triangle',g:.12,pan:P(x)});
+      for(let i=0;i<3;i++) O({f:1900,dur:.025,type:'square',g:.025,when:.18+i*.27,lp:4000}); },
+    land(x){ if(!ready()||!gate('land',60))return; N({type:'lowpass',f:380,f2:70,dur:.2,g:.36,pan:P(x)}); O({f:110,f2:50,dur:.15,g:.25,pan:P(x)}); },
+    shot(kind,x){ if(!ready())return; const pan=P(x);
+      if(kind==='mg'){ if(!gate('mg',55))return; N({type:'bandpass',f:2300,q:.9,dur:.07,g:.2,pan}); O({f:230,f2:70,dur:.05,type:'square',g:.05,lp:1500,pan}); }
+      else if(kind==='tower'){ if(!gate('tw',70))return; N({type:'bandpass',f:1500,f2:500,q:.7,dur:.12,g:.2,pan}); O({f:170,f2:55,dur:.09,type:'triangle',g:.16,pan}); }
+      else if(kind==='cannon'){ if(!gate('cn',90))return; N({type:'lowpass',f:1600,f2:180,dur:.32,g:.34,pan}); O({f:95,f2:32,dur:.3,g:.5,pan}); }
+      else if(kind==='sniper'){ N({type:'lowpass',f:5000,f2:280,dur:.4,g:.42,pan}); O({f:130,f2:34,dur:.32,g:.5,pan}); N({type:'bandpass',f:1200,dur:.25,g:.06,when:.16,pan}); } },
+    throw(x){ if(!ready()||!gate('th',80))return; N({type:'bandpass',f:450,f2:2300,q:1.6,dur:.22,g:.12,pan:P(x)}); },
+    explosion(s,x){ if(!ready()||!gate('ex',55))return; const k=Math.min(1.5,s), pan=P(x);
+      N({type:'lowpass',f:2600,f2:90,dur:.45+.55*k,g:.5*k,pan}); O({f:125,f2:30,dur:.35+.3*k,g:.7*k,pan});
+      for(let i=0;i<3;i++) N({type:'highpass',f:2500,dur:.04,g:.08,when:.05+Math.random()*.25,pan}); },
+    punch(x){ if(!ready()||!gate('pu',60))return; N({type:'lowpass',f:900,f2:140,dur:.13,g:.34,pan:P(x)}); O({f:150,f2:52,dur:.13,g:.34,pan:P(x)}); },
+    clang(x){ if(!ready()||!gate('cl',60))return; O({f:640,f2:420,dur:.2,type:'square',g:.05,lp:2600,pan:P(x)}); O({f:955,dur:.14,type:'triangle',g:.06,pan:P(x)}); N({type:'highpass',f:2600,dur:.06,g:.12,pan:P(x)}); },
+    slash(x){ if(!ready()||!gate('sl',50))return; N({type:'highpass',f:3000,f2:7000,dur:.09,g:.14,pan:P(x)}); },
+    death(x){ if(!ready()||!gate('de',50))return; O({f:520,f2:140,dur:.17,type:'square',g:.045,lp:1800,pan:P(x)}); N({type:'lowpass',f:900,f2:200,dur:.22,g:.14,pan:P(x)}); },
+    whistle(x){ if(!ready()||!gate('wh',70))return; O({f:2100,f2:650,dur:.42,type:'sine',g:.045,pan:P(x)}); },
+    rocket(x){ if(!ready()||!gate('rk',90))return; N({type:'bandpass',f:380,f2:2600,q:1,dur:.75,g:.17,pan:P(x)}); O({f:900,f2:300,dur:.7,type:'sawtooth',g:.025,lp:1600,pan:P(x)}); },
+    plane(){ if(!ready())return; const t=ac.currentTime, d=2.6; const g=ac.createGain(); g.gain.setValueAtTime(0.0001,t);
+      g.gain.exponentialRampToValueAtTime(0.16,t+1.0); g.gain.exponentialRampToValueAtTime(0.0001,t+d);
+      const f=ac.createBiquadFilter(); f.type='lowpass'; f.frequency.value=650; f.connect(g); g.connect(sfx);
+      for(const fr of [96,98.6,48]){ const o=ac.createOscillator(); o.type='sawtooth'; o.frequency.setValueAtTime(fr*1.12,t);
+        o.frequency.exponentialRampToValueAtTime(fr*0.86,t+d); o.connect(f); o.start(t); o.stop(t+d+0.05); }
+      N({type:'lowpass',f:480,dur:d,g:.1,a:1.0}); },
+    towerDown(x){ if(!ready())return; last.ex=0; api.explosion(2.4,x); N({type:'lowpass',f:240,f2:55,dur:1.7,g:.42,when:.08}); O({f:70,f2:28,dur:1.2,g:.5,when:.05}); },
+    horn(){ if(!ready())return; O({f:233,dur:.32,type:'sawtooth',g:.08,lp:1300}); O({f:311,dur:.55,type:'sawtooth',g:.08,lp:1300,when:.33}); O({f:466,dur:.55,type:'sawtooth',g:.05,lp:1500,when:.33}); },
+    general(){ if(!ready())return; const n=[392,523,659,784];
+      n.forEach((f,i)=>{ O({f,dur:.2,type:'sawtooth',g:.09,lp:2300,when:i*.11}); O({f:f*2,dur:.18,type:'square',g:.02,lp:3000,when:i*.11}); });
+      [523,659,784,1046].forEach(f=>O({f,dur:.85,type:'sawtooth',g:.06,lp:2000,when:.48,a:.03}));
+      for(let i=0;i<9;i++) N({type:'highpass',f:1500,dur:.04,g:.09,when:i*.045}); },
+    win(){ if(!ready())return; [523,659,784,1046].forEach((f,i)=>O({f,dur:.3,type:'square',g:.06,lp:2500,when:i*.13}));
+      [523,659,784,1046].forEach(f=>O({f,dur:1.2,type:'sawtooth',g:.045,lp:2200,when:.55,a:.04})); },
+    lose(){ if(!ready())return; [392,311,262,196].forEach((f,i)=>O({f,dur:.4,type:'triangle',g:.12,when:i*.22})); }
+  };
+
+  // ---------- Música de batalla (secuenciador con tambores tribales y marimba) ----------
+  const M = { on:false, step:0, next:0, timer:null, intense:false, loop:0 };
+  const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+  const CH = [ {root:45, tones:[57,60,64]}, {root:41, tones:[53,57,60]}, {root:43, tones:[55,59,62]}, {root:40, tones:[52,55,59]} ];
+  const MEL = [ {0:76,3:74,6:72,8:69,10:72,12:74,14:76}, {0:77,3:76,6:72,8:69,11:72,14:69},
+                {0:74,3:79,6:74,8:71,10:74,12:79,14:81}, {0:76,4:79,6:76,8:71,10:74,12:76} ];
+  const MEL2 = [ {0:81,2:79,4:76,8:74,10:76,12:72}, {0:72,2:77,4:76,6:72,8:69,12:72},
+                 {0:79,2:74,4:71,8:74,10:79,14:83}, {0:76,2:71,4:74,6:76,8:79,12:76,14:74} ];
+  function pad(t, tones, d){
+    for (const m of tones) { const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = mtof(m); o.detune.value = rnd(-6,6);
+      const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 850;
+      const g = ac.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.016, t + 0.4);
+      g.gain.setValueAtTime(0.016, t + d - 0.3); g.gain.linearRampToValueAtTime(0.0001, t + d);
+      o.connect(f); f.connect(g); g.connect(mus); o.start(t); o.stop(t + d + 0.05); }
+  }
+  function playStep(s, t, spb){
+    const bar = s >> 4, st = s & 15, ch = CH[bar], it = M.intense;
+    if (st === 0 || st === 6 || st === 8 || st === 11 || (it && st === 14)) O({at:t,f:150,f2:42,dur:.28,g:.55,dest:mus});
+    if (st === 3 || st === 10 || st === 13 || (it && st === 5)) { O({at:t,f:it?380:340,f2:260,dur:.13,g:.2,dest:mus}); N({at:t,type:'highpass',f:3000,dur:.02,g:.05,dest:mus}); }
+    if (st === 7 || st === 15) O({at:t,f:230,f2:170,dur:.16,g:.22,dest:mus});
+    N({
